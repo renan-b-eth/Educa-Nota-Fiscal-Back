@@ -1,0 +1,637 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserRole {
+  ADM_GERAL
+  ADM_CEI
+  DIRETORA
+  SECRETARIA
+  PROFESSORA
+  RESPONSAVEL
+}
+
+enum CardCopyType {
+  VIA_1_FAMILIA
+  VIA_2_FAMILIA
+  VIA_TRANSPORTADOR
+}
+
+enum CardStatus {
+  ACTIVE
+  LOST
+  REVOKED
+}
+
+enum AttendanceType {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum AttendanceMethod {
+  CONTROL_ID
+  QR_CODE
+  MANUAL_CONTINGENCY
+}
+
+enum AuthOrigin {
+  PASTA_SECRETARIA
+  WHATSAPP_DIRETORIA
+}
+
+enum OccurrenceCategory {
+  ENTRADA
+  SAUDE_INTERCORRENCIA
+  SAIDA
+  ATRASO_17H
+  OUTROS
+}
+
+enum OccurrenceSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum PostType {
+  PHOTO
+  VIDEO
+  HOOK_DATE_CAMPAIGN
+  NOTICE
+}
+
+enum PostScope {
+  INDIVIDUAL
+  CLASSROOM
+  ALL_TENANT
+  ALL_PLATFORM
+}
+
+enum BillingStatus {
+  DRAFT
+  EXPORTED_TO_BLING
+  NFE_ISSUED
+  PAID
+}
+
+// ==========================================
+// CORE & AUTH
+// ==========================================
+
+model Organization {
+  id           String   @id @default(uuid())
+  cnpj         String   @unique
+  razaoSocial  String
+  nomeFantasia String
+  endereco     String
+  telefone     String
+  email        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ceis         Cei[]
+
+  @@map("organizations")
+}
+
+model Cei {
+  id           String   @id @default(uuid())
+  orgId        String?
+  cnpj         String   @unique
+  razaoSocial  String
+  nomeFantasia String
+  endereco     String
+  telefone     String
+  email        String?
+  taxaComissao Float    @default(10.0) // % sobre a NFP para o Educa Fora da Caixa
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  users                       User[]
+  classrooms                  Classroom[]
+  tablets                     Tablet[]
+  students                    Student[]
+  guardians                   Guardian[]
+  transporters                SchoolTransporter[]
+  attendanceRecords           AttendanceRecord[]
+  occurrenceEntries           OccurrenceBookEntry[]
+  exceptionalAuthorizations   ExceptionalAuthorization[]
+  dailyKitchenCounts          DailyKitchenCount[]
+  feedPosts                   FeedPost[]
+  nfpImports                  NfpImport[]
+  nfpDonations                NfpDonation[]
+  raffles                     Raffle[]
+  billingOrders               BillingOrder[]
+
+  @@map("ceis")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String?   @unique
+  cpf          String?   @unique
+  name         String
+  passwordHash String
+  phone        String?
+  avatarUrl    String?
+  role         UserRole  @default(RESPONSAVEL)
+  ceiId        String?
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  cei          Cei?      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+
+  refreshTokens              RefreshToken[]
+  teacherClassrooms          TeacherClassroom[]
+  guardian                   Guardian?
+  reportedOccurrences        OccurrenceBookEntry[]     @relation("ReportedOccurrences")
+  authorizedExceptions       ExceptionalAuthorization[] @relation("AuthorizedExceptions")
+  dailyKitchenCounts         DailyKitchenCount[]       @relation("SubmittedKitchenCounts")
+  feedPosts                  FeedPost[]                @relation("UserFeedPosts")
+
+  @@index([ceiId])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ==========================================
+// ESTRUTURA ESCOLAR & DISPOSITIVOS
+// ==========================================
+
+model Classroom {
+  id         String   @id @default(uuid())
+  ceiId      String
+  name       String   // Ex.: "Berçário II A"
+  code       String   // Ex.: "B2-A"
+  capacity   Int      @default(20)
+  schoolYear String   @default("2026")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  cei        Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+
+  teachers          TeacherClassroom[]
+  students          Student[]
+  tablets           Tablet[]
+  attendanceRecords AttendanceRecord[]
+  occurrenceEntries OccurrenceBookEntry[]
+  feedPosts         FeedPost[]
+
+  @@index([ceiId])
+  @@map("classrooms")
+}
+
+model Tablet {
+  id                  String   @id @default(uuid())
+  ceiId               String
+  code                String   // Código de patrimônio (ex.: TAB-001)
+  deviceType          String   @default("Tablet Android")
+  brandModel          String   // Ex.: "Samsung Galaxy Tab A9"
+  serialNumber        String
+  imei                String?
+  isActive            Boolean  @default(true)
+  assignedClassroomId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  cei                 Cei        @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  assignedClassroom   Classroom? @relation(fields: [assignedClassroomId], references: [id], onDelete: SetNull)
+
+  @@unique([ceiId, code])
+  @@index([ceiId])
+  @@map("tablets")
+}
+
+model TeacherClassroom {
+  id          String    @id @default(uuid())
+  userId      String
+  classroomId String
+  assignedAt  DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  classroom   Classroom @relation(fields: [classroomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, classroomId])
+  @@index([classroomId])
+  @@index([userId])
+  @@map("teacher_classrooms")
+}
+
+// ==========================================
+// ALUNOS, MATRÍCULA E SAÚDE
+// ==========================================
+
+model Student {
+  id             String    @id @default(uuid())
+  ceiId          String
+  classroomId    String
+  name           String
+  birthDate      DateTime
+  enrollmentDate DateTime  @default(now())
+  motherName     String
+  photoUrl       String?
+  eolCode        String?   @unique
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  cei            Cei       @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  classroom      Classroom @relation(fields: [classroomId], references: [id], onDelete: Restrict)
+
+  guardians         StudentGuardian[]
+  transporters      StudentTransporter[]
+  enrollment        StudentEnrollment?
+  healthRecord      StudentHealthRecord?
+  cards             StudentCard[]
+  attendanceRecords AttendanceRecord[]
+  occurrenceEntries OccurrenceBookEntry[]
+  exceptionalAuths  ExceptionalAuthorization[]
+  feedPosts         FeedPost[]
+
+  @@index([ceiId])
+  @@index([classroomId])
+  @@map("students")
+}
+
+model Guardian {
+  id           String   @id @default(uuid())
+  ceiId        String
+  userId       String?  @unique
+  name         String
+  cpf          String   @unique
+  rg           String
+  phone        String
+  email        String
+  address      String
+  avatarUrl    String?
+  qrCodeToken  String   @unique // Token único para validação no Check-out
+  favoritouNfp Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cei          Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  students     StudentGuardian[]
+
+  @@index([ceiId])
+  @@map("guardians")
+}
+
+model StudentGuardian {
+  id           String   @id @default(uuid())
+  studentId    String
+  guardianId   String
+  relationship String   @default("MÃE") // MÃE, PAI, AVÓ, TIO, RESPONSÁVEL LEGAL
+  isPrimary    Boolean  @default(false)
+  canPickup    Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  student      Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian     Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, guardianId])
+  @@index([studentId])
+  @@index([guardianId])
+  @@map("student_guardians")
+}
+
+model SchoolTransporter {
+  id            String   @id @default(uuid())
+  ceiId         String
+  name          String
+  cpf           String   @unique
+  rg            String
+  phone         String
+  companyName   String?
+  vehiclePlate  String
+  driverLicense String
+  qrCodeToken   String   @unique
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cei           Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  students      StudentTransporter[]
+
+  @@index([ceiId])
+  @@map("school_transporters")
+}
+
+model StudentTransporter {
+  id              String            @id @default(uuid())
+  studentId       String
+  transporterId   String
+  shift           String            @default("INTEGRAL") // MANHA, TARDE, INTEGRAL
+  authorizedFrom  DateTime          @default(now())
+  authorizedUntil DateTime?
+  createdAt       DateTime          @default(now())
+
+  student         Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  transporter     SchoolTransporter @relation(fields: [transporterId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, transporterId])
+  @@index([studentId])
+  @@index([transporterId])
+  @@map("student_transporters")
+}
+
+model StudentEnrollment {
+  id                String   @id @default(uuid())
+  studentId         String   @unique
+  eolStatus         String   @default("CADASTRADO") // PENDENTE, CADASTRADO, VALIDADO
+  documentChecklist Json?    // Certidão de nascimento, carteira vacinação, comprovante endereço, etc.
+  imageConsentCei   Boolean  @default(true)  // Termo de uso de imagem CEI/ONG
+  imageConsentSme   Boolean  @default(true)  // Termo de uso de imagem SME/DRE
+  leveLeite         Boolean  @default(true)  // Adesão ao programa Leve Leite
+  enrolledAt        DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  student           Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("student_enrollments")
+}
+
+model StudentHealthRecord {
+  id                  String   @id @default(uuid())
+  studentId           String   @unique
+  allergies           String[] @default([])
+  dietaryRestrictions String[] @default([])
+  cidList             String[] @default([])
+  chronicDiseases     String[] @default([])
+  vaccinesUpToDate    Boolean  @default(true)
+  ubsReference        String?
+  healthInsurance     String?
+  emergencyContacts   Json?
+  notes               String?
+  updatedAt           DateTime @updatedAt
+
+  student             Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("student_health_records")
+}
+
+model StudentCard {
+  id         String       @id @default(uuid())
+  studentId  String
+  cardNumber String       // Ex.: "CR-2026-0042"
+  copyType   CardCopyType @default(VIA_1_FAMILIA)
+  qrCodeToken String      @unique
+  status     CardStatus   @default(ACTIVE)
+  issuedAt   DateTime     @default(now())
+  revokedAt  DateTime?
+
+  student    Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@map("student_cards")
+}
+
+// ==========================================
+// OPERAÇÃO DIÁRIA & SEGURANÇA
+// ==========================================
+
+model AttendanceRecord {
+  id                 String           @id @default(uuid())
+  ceiId              String
+  studentId          String
+  classroomId        String
+  type               AttendanceType   // CHECK_IN, CHECK_OUT
+  method             AttendanceMethod @default(QR_CODE)
+  timestamp          DateTime         @default(now())
+  confirmedByUserId  String
+  guardianId         String?
+  transporterId      String?
+  triageStatus       String           @default("NORMAL") // NORMAL, FEBRE, MANCHAS, SINTOMAS_GRIPAIS
+  triageTemperature  Float?
+  triageNotes        String?
+  notes              String?
+  createdAt          DateTime         @default(now())
+
+  cei                Cei              @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  student            Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  classroom          Classroom        @relation(fields: [classroomId], references: [id], onDelete: Cascade)
+
+  @@index([ceiId])
+  @@index([studentId])
+  @@index([classroomId])
+  @@index([timestamp])
+  @@map("attendance_records")
+}
+
+model ExceptionalAuthorization {
+  id                   String     @id @default(uuid())
+  ceiId                String
+  studentId            String
+  authorizedPersonName String
+  authorizedPersonCpf  String
+  authorizedPersonRg   String
+  authorizedPersonPhone String
+  reason               String
+  origin               AuthOrigin @default(WHATSAPP_DIRETORIA)
+  validDate            DateTime   @default(now())
+  digitalStamp         String     // Código único de carimbo digital
+  authorizedByUserId   String
+  createdAt            DateTime   @default(now())
+
+  cei                  Cei        @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  student              Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  authorizedByUser     User       @relation("AuthorizedExceptions", fields: [authorizedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([ceiId])
+  @@index([studentId])
+  @@map("exceptional_authorizations")
+}
+
+model OccurrenceBookEntry {
+  id               String             @id @default(uuid())
+  ceiId            String
+  studentId        String?
+  classroomId      String?
+  category         OccurrenceCategory @default(ENTRADA)
+  title            String
+  description      String
+  severity         OccurrenceSeverity @default(LOW)
+  reportedByUserId String
+  reportedAt       DateTime           @default(now())
+  resolvedAt       DateTime?
+  digitalSignature String?
+
+  cei              Cei                @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  student          Student?           @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  classroom        Classroom?         @relation(fields: [classroomId], references: [id], onDelete: SetNull)
+  reportedByUser   User               @relation("ReportedOccurrences", fields: [reportedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([ceiId])
+  @@index([reportedAt])
+  @@map("occurrence_book_entries")
+}
+
+model DailyKitchenCount {
+  id                         String   @id @default(uuid())
+  ceiId                      String
+  date                       DateTime @default(now())
+  totalPresent               Int
+  countByDietaryRestrictions Json?    // { "semLactose": 3, "vegetariano": 2, "semGluten": 1 }
+  submittedAt                DateTime @default(now())
+  submittedByUserId          String
+
+  cei                        Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  submittedByUser            User     @relation("SubmittedKitchenCounts", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([ceiId])
+  @@index([date])
+  @@map("daily_kitchen_counts")
+}
+
+// ==========================================
+// FEED, NFP & FATURAMENTO
+// ==========================================
+
+model FeedPost {
+  id                String    @id @default(uuid())
+  ceiId             String
+  authorId          String
+  authorName        String
+  authorRole        String
+  type              PostType  @default(PHOTO)
+  title             String
+  content           String
+  mediaUrls         String[]  @default([])
+  targetScope       PostScope @default(CLASSROOM)
+  targetClassroomId String?
+  targetStudentId   String?
+  likes             Int       @default(0)
+  isNfpCampaign     Boolean   @default(false)
+  nfpActionUrl      String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  cei               Cei        @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  author            User       @relation("UserFeedPosts", fields: [authorId], references: [id], onDelete: Cascade)
+  targetClassroom   Classroom? @relation(fields: [targetClassroomId], references: [id], onDelete: SetNull)
+  targetStudent     Student?   @relation(fields: [targetStudentId], references: [id], onDelete: SetNull)
+
+  @@index([ceiId])
+  @@index([targetScope])
+  @@map("feed_posts")
+}
+
+model HookDate {
+  id          String   @id @default(uuid())
+  title       String
+  date        DateTime
+  description String
+  bannerUrl   String?
+  pushTitle   String
+  pushBody    String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("hook_dates")
+}
+
+model NfpImport {
+  id                String   @id @default(uuid())
+  ceiId             String
+  fileName          String
+  referenceMonth    String   // Ex.: "Outubro / 2026"
+  importedAt        DateTime @default(now())
+  totalDonations    Int
+  totalAmount       Float
+  activeDonorsCount Int
+
+  cei               Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+  donations         NfpDonation[]
+
+  @@index([ceiId])
+  @@map("nfp_imports")
+}
+
+model NfpDonation {
+  id               String    @id @default(uuid())
+  importId         String
+  ceiId            String
+  donorName        String
+  donorCpfMasked   String
+  donationCount    Int       @default(1)
+  donationAmount   Float
+  estimatedCredits Float
+  createdAt        DateTime  @default(now())
+
+  import           NfpImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  cei              Cei       @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+
+  @@index([ceiId])
+  @@index([importId])
+  @@map("nfp_donations")
+}
+
+model Raffle {
+  id               String   @id @default(uuid())
+  ceiId            String
+  title            String
+  prize            String
+  drawDate         DateTime
+  winnerName       String?
+  winnerCpfMasked  String?
+  winningTicket    String?
+  isCompleted      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  cei              Cei      @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+
+  @@index([ceiId])
+  @@map("raffles")
+}
+
+model BillingOrder {
+  id               String        @id @default(uuid())
+  ceiId            String
+  period           String        // Ex.: "10/2026"
+  nfpTotalReceived Float
+  commissionRate   Float         @default(10.0)
+  commissionAmount Float
+  status           BillingStatus @default(DRAFT)
+  blingOrderId     String?
+  nfeNumber        String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  cei              Cei           @relation(fields: [ceiId], references: [id], onDelete: Cascade)
+
+  @@index([ceiId])
+  @@map("billing_orders")
+}
